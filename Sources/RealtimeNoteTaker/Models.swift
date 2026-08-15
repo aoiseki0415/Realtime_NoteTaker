@@ -34,20 +34,20 @@ enum AudioDeviceMode: String, CaseIterable, Codable, Identifiable {
 }
 
 enum MinutesTemplate: String, CaseIterable, Codable, Identifiable {
-    case standard = "標準会議"
     case research = "研究・プロジェクト進捗"
+    case groupDiscussion = "GD用"
     case lecture = "動画視聴・講義メモ"
 
     var id: String { rawValue }
 
     var sections: [String] {
         switch self {
-        case .standard:
-            ["会議の目的", "主な議論", "決定事項", "ToDo", "未解決事項・次回確認"]
         case .research:
-            ["背景・目的", "現在の進捗・共有事項", "検討した内容", "決定した方針", "実施タスク", "課題・保留事項"]
+            ["会議の目的", "主な議論", "決定事項", "ToDo", "未解決事項・次回確認"]
+        case .groupDiscussion:
+            ["議論のタイトル", "時間配分", "前提確認", "現状分析", "問題特定（whatの特定）", "原因・真因分析（whyの深掘り）", "施策議論・決定", "まとめ（発表用）", "その他"]
         case .lecture:
-            ["内容の要約", "重要な論点・知見", "キーワード", "今後確認したいこと", "自分のToDo・メモ"]
+            ["内容の要約", "重要な論点・知見", "キーワード", "今後確認したいこと"]
         }
     }
 }
@@ -59,7 +59,7 @@ struct MeetingConfiguration: Codable, Equatable {
     var microphoneDeviceMode: AudioDeviceMode = .builtIn
     var speakerDeviceMode: AudioDeviceMode = .builtIn
     var meetingApp: MeetingApp = .zoom
-    var template: MinutesTemplate = .standard
+    var template: MinutesTemplate = .research
     var hasConfirmedConsent = false
     var repositoryPath = NSString(string: "~/GitHub/Realtime_NoteTaker").expandingTildeInPath
 }
