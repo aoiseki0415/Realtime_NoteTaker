@@ -8,9 +8,11 @@ final class AppModel {
     var activeSession: MeetingSession?
     var isCapturing = false
     var lastError: String?
+    var captureError: String?
     var pendingDeletionSession: MeetingSession?
     private var refreshTask: Task<Void, Never>?
     private var lastRefreshAt = Date()
+    private let audioCapture = AudioCaptureCoordinator()
     var hasOpenAIAPIKey: Bool { OpenAISettings.hasAPIKey }
 
     func saveOpenAIAPIKey(_ value: String) {
@@ -44,8 +46,22 @@ final class AppModel {
             try EncryptedSessionStore.save(session)
             activeSession = session
             isCapturing = true
+            captureError = nil
             lastRefreshAt = Date()
             scheduleRefreshLoop()
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    try await self.audioCapture.start(configuration: session.configuration) { data, source, date in
+                        Task { @MainActor [weak self] in
+                            await self?.transcribe(data, sessionID: session.id, source: source, chunkEndedAt: date)
+                        }
+                    }
+                } catch {
+                    self.captureError = error.localizedDescription
+                    self.isCapturing = false
+                }
+            }
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -73,8 +89,13 @@ final class AppModel {
         persist(session)
     }
 
-    func ingestTranscription(_ segments: [OpenAIDiarizedSegment], source: TranscriptSource, chunkEndedAt: Date) {
-        guard var session = activeSession else { return }
+    func ingestTranscription(
+        _ segments: [OpenAIDiarizedSegment],
+        sessionID: UUID,
+        source: TranscriptSource,
+        chunkEndedAt: Date
+    ) {
+        guard isCapturing, var session = activeSession, session.id == sessionID else { return }
         let chunkStartedAt = chunkEndedAt.addingTimeInterval(-4)
         for item in segments {
             session.temporaryTranscript.append(TranscriptSegment(
@@ -100,6 +121,7 @@ final class AppModel {
     func finishMeeting() {
         guard var session = activeSession else { return }
         refreshTask?.cancel()
+        Task { [audioCapture] in await audioCapture.stop() }
         session.endedAt = Date()
         isCapturing = false
         do {
@@ -122,12 +144,21 @@ final class AppModel {
         }
     }
 
+    func abandonMeeting() {
+        refreshTask?.cancel()
+        Task { [audioCapture] in await audioCapture.stop() }
+        if let session = activeSession { try? EncryptedSessionStore.delete(session) }
+        activeSession = nil
+        isCapturing = false
+        captureError = nil
+    }
+
     func handleTemporaryTranscriptDeletion(delete: Bool) {
         guard let session = pendingDeletionSession else { return }
         if delete {
             do {
                 try EncryptedSessionStore.delete(session)
-                EncryptedSessionStore.destroyTemporaryTranscriptKey()
+                EncryptedSessionStore.destroyTemporaryTranscriptKeyIfNoSessionsRemain()
                 activeSession = nil
             } catch {
                 lastError = error.localizedDescription
@@ -158,6 +189,7 @@ final class AppModel {
         guard !newSegments.isEmpty else { return }
         do {
             let update = try await MinutesRefreshService().refresh(recentSegments: newSegments, current: session.structuredMinutes)
+            guard isCapturing, activeSession?.id == session.id else { return }
             session.importantSegments.append(contentsOf: newSegments.map { segment in
                 var copy = segment
                 copy.isImportant = update.importantIDs.contains(segment.id)
@@ -178,6 +210,20 @@ final class AppModel {
         case .roomMicrophone: "話者\(diarizedLabel)"
         case .remoteSystem: "相手\(diarizedLabel)"
         case .videoSystem: "動画\(diarizedLabel)"
+        }
+    }
+
+    private func transcribe(
+        _ wavData: Data,
+        sessionID: UUID,
+        source: TranscriptSource,
+        chunkEndedAt: Date
+    ) async {
+        do {
+            let segments = try await OpenAITranscriptionService().transcribe(wavData: wavData)
+            ingestTranscription(segments, sessionID: sessionID, source: source, chunkEndedAt: chunkEndedAt)
+        } catch {
+            lastError = "文字起こしに失敗しました。次の音声チャンクで再試行します。\n\(error.localizedDescription)"
         }
     }
 }

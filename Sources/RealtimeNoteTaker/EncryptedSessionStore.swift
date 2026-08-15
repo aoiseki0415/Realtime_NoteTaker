@@ -54,6 +54,12 @@ enum EncryptedSessionStore {
     private static func fileURL(for id: UUID) -> URL {
         baseURL.appendingPathComponent("\(id.uuidString).session")
     }
+
+    static func destroyTemporaryTranscriptKeyIfNoSessionsRemain() {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: baseURL, includingPropertiesForKeys: nil),
+              files.allSatisfy({ $0.pathExtension != "session" }) else { return }
+        destroyTemporaryTranscriptKey()
+    }
 }
 
 enum StoreError: LocalizedError {

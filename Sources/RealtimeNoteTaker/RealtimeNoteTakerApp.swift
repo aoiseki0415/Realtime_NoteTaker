@@ -51,43 +51,45 @@ struct ContentView: View {
 struct SetupView: View {
     @Environment(AppModel.self) private var model
     @State private var isShowingAPIKeySheet = false
+    @State private var draft = MeetingConfiguration()
 
     var body: some View {
-        @Bindable var model = model
         Form {
             Section("会議の設定") {
-                TextField("会議名", text: $model.configuration.title)
-                Picker("利用場面", selection: $model.configuration.mode) {
+                TextField("会議名", text: $draft.title)
+                Picker("利用場面", selection: $draft.mode) {
                     ForEach(MeetingMode.allCases) { Text($0.rawValue).tag($0) }
                 }
-                Stepper("自分以外の人数: \(model.configuration.otherParticipantCount)名", value: $model.configuration.otherParticipantCount, in: 0...20)
-                Picker("議事録テンプレート", selection: $model.configuration.template) {
+                Stepper("自分以外の人数: \(draft.otherParticipantCount)名", value: $draft.otherParticipantCount, in: 0...20)
+                Picker("議事録テンプレート", selection: $draft.template) {
                     ForEach(MinutesTemplate.allCases) { Text($0.rawValue).tag($0) }
                 }
             }
 
-            Section("音声入力") {
-                Picker("使用する音声機器", selection: $model.configuration.audioDeviceMode) {
-                    ForEach(AudioDeviceMode.allCases) { Text($0.rawValue).tag($0) }
-                }
-                if model.configuration.mode.requiresMicrophone {
-                    TextField("マイクデバイス名（開始時に確認）", text: $model.configuration.microphoneName)
-                }
-                if model.configuration.mode == .online {
-                    Picker("オンライン会議アプリ", selection: $model.configuration.meetingApp) {
-                        ForEach(MeetingApp.allCases) { Text($0.rawValue).tag($0) }
+            Section("音声機器") {
+                if draft.mode.requiresMicrophone {
+                    Picker("マイク入力", selection: $draft.microphoneDeviceMode) {
+                        ForEach(AudioDeviceMode.allCases) { Text($0.rawValue).tag($0) }
                     }
                 }
-                if model.configuration.mode.requiresSystemAudio {
-                    TextField("システム音声の対象（開始時に選択）", text: $model.configuration.systemAudioTarget)
-                    Text("Google Meetは、実際に使用するブラウザを音声取得対象として選択します。")
+                Picker("スピーカー出力", selection: $draft.speakerDeviceMode) {
+                    ForEach(AudioDeviceMode.allCases) { Text($0.rawValue).tag($0) }
+                }
+                Text("イヤホンを選ぶ場合は、Macのコントロールセンターでも同じイヤホンを入力・出力デバイスとして選択してください。システム音声の取得自体は、スピーカー出力の選択に左右されません。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if draft.mode.requiresSystemAudio {
+                    Picker(draft.mode == .online ? "オンライン会議アプリ" : "動画を再生するアプリ", selection: $draft.meetingApp) {
+                        ForEach(MeetingApp.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Text("Zoom、Microsoft Teams、Google Chromeから、音声を取得するアプリを選択してください。Google MeetはGoogle Chromeを選びます。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
             Section("保存先") {
-                TextField("GitHubリポジトリのローカルパス", text: $model.configuration.repositoryPath)
+                TextField("GitHubリポジトリのローカルパス", text: $draft.repositoryPath)
                 Text("議事録は 議事録管理/YYYY/MM/ 以下に保存し、終了時に自動でGitHubへプッシュします。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -101,24 +103,32 @@ struct SetupView: View {
                 Button(model.hasOpenAIAPIKey ? "APIキーを更新" : "APIキーを登録") {
                     isShowingAPIKeySheet = true
                 }
+                Text("開始前または終了後に、OpenAI Platform の Usage で利用額・クレジット残高を確認してください。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Link("OpenAI Platform の Usage を開く", destination: URL(string: "https://platform.openai.com/usage")!)
             }
 
             Section("同意確認") {
-                Toggle("参加者への録音・文字起こしの通知と同意を確認しました", isOn: $model.configuration.hasConfirmedConsent)
+                Toggle("参加者への録音・文字起こしの通知と同意を確認しました", isOn: $draft.hasConfirmedConsent)
                 Text("文字起こしと30秒ごとの議事録整理のため、音声および必要最小限のテキストをOpenAI APIへ送信します。原音声は保存しません。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section {
-                Button("音声取得を開始") { model.startMeeting() }
+                Button("音声取得を開始") {
+                    model.configuration = draft
+                    model.startMeeting()
+                }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!model.configuration.hasConfirmedConsent || model.configuration.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!draft.hasConfirmedConsent || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .formStyle(.grouped)
         .padding()
         .navigationTitle("Realtime NoteTaker")
+        .onAppear { draft = model.configuration }
         .sheet(isPresented: $isShowingAPIKeySheet) {
             APIKeySheet(isPresented: $isShowingAPIKeySheet)
         }
@@ -163,12 +173,19 @@ struct MeetingView: View {
                     Text(session.configuration.title).font(.title2.bold())
                     Text("\(session.configuration.mode.rawValue) ・ \(model.isCapturing ? "音声取得中" : "終了処理中")")
                         .foregroundStyle(model.isCapturing ? .red : .secondary)
+                    if let error = model.captureError {
+                        Text("音声取得エラー: \(error)")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                    }
                 }
                 Spacer()
                 if model.isCapturing {
-                    Button("確認用の発話を追加") { model.appendDemoSegment() }
                     Button("会議を終了") { model.finishMeeting() }
                         .buttonStyle(.borderedProminent)
+                } else {
+                    Button("テストを中止して設定へ戻る") { model.abandonMeeting() }
                 }
             }
             .padding()
@@ -212,22 +229,37 @@ struct ImportantTranscriptView: View {
     let session: MeetingSession
 
     var body: some View {
-        List(session.importantSegments.sorted(by: { $0.startedAt < $1.startedAt })) { segment in
-            VStack(alignment: .leading, spacing: 4) {
-                Text("\(segment.speaker) ・ \(segment.startedAt.formatted(date: .omitted, time: .standard))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(segment.text)
+        VStack(spacing: 0) {
+            Text("受信した発話（確認用）")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding([.top, .horizontal])
+            List(session.temporaryTranscript.sorted(by: { $0.startedAt < $1.startedAt })) { segment in
+                TranscriptRow(segment: segment)
             }
-            .padding(.vertical, 3)
-        }
-        .overlay(alignment: .topLeading) {
+            .frame(minHeight: 160)
+            Divider()
             Text("重要発話ログ")
-                .font(.title3.bold())
-                .padding()
-                .allowsHitTesting(false)
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
+            List(session.importantSegments.sorted(by: { $0.startedAt < $1.startedAt })) { segment in
+                TranscriptRow(segment: segment)
+            }
         }
-        .padding(.top, 38)
         .frame(maxWidth: .infinity)
+    }
+}
+
+struct TranscriptRow: View {
+    let segment: TranscriptSegment
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(segment.speaker) ・ \(segment.startedAt.formatted(date: .omitted, time: .standard))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(segment.text)
+        }
+        .padding(.vertical, 3)
     }
 }

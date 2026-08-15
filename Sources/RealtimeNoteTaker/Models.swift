@@ -13,15 +13,22 @@ enum MeetingMode: String, CaseIterable, Codable, Identifiable {
 enum MeetingApp: String, CaseIterable, Codable, Identifiable {
     case zoom = "Zoom"
     case teams = "Microsoft Teams"
-    case meet = "Google Meet"
-    case other = "その他"
+    case googleChrome = "Google Chrome"
 
     var id: String { rawValue }
+
+    var captureQuery: String {
+        switch self {
+        case .zoom: "zoom"
+        case .teams: "teams"
+        case .googleChrome: "google chrome"
+        }
+    }
 }
 
 enum AudioDeviceMode: String, CaseIterable, Codable, Identifiable {
-    case builtIn = "Mac本体"
-    case external = "イヤホン・外部機器"
+    case builtIn = "MacBook Air（内蔵）"
+    case earphones = "イヤホン"
 
     var id: String { rawValue }
 }
@@ -49,10 +56,9 @@ struct MeetingConfiguration: Codable, Equatable {
     var title = ""
     var mode: MeetingMode = .inPerson
     var otherParticipantCount = 1
-    var audioDeviceMode: AudioDeviceMode = .builtIn
-    var microphoneName = ""
+    var microphoneDeviceMode: AudioDeviceMode = .builtIn
+    var speakerDeviceMode: AudioDeviceMode = .builtIn
     var meetingApp: MeetingApp = .zoom
-    var systemAudioTarget = ""
     var template: MinutesTemplate = .standard
     var hasConfirmedConsent = false
     var repositoryPath = NSString(string: "~/GitHub/Realtime_NoteTaker").expandingTildeInPath
