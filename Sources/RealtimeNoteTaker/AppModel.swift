@@ -9,6 +9,8 @@ final class AppModel {
     var isCapturing = false
     var lastError: String?
     var pendingDeletionSession: MeetingSession?
+    private var refreshTask: Task<Void, Never>?
+    private var lastRefreshAt = Date()
     var hasOpenAIAPIKey: Bool { OpenAISettings.hasAPIKey }
 
     func saveOpenAIAPIKey(_ value: String) {
@@ -42,6 +44,8 @@ final class AppModel {
             try EncryptedSessionStore.save(session)
             activeSession = session
             isCapturing = true
+            lastRefreshAt = Date()
+            scheduleRefreshLoop()
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -69,6 +73,23 @@ final class AppModel {
         persist(session)
     }
 
+    func ingestTranscription(_ segments: [OpenAIDiarizedSegment], source: TranscriptSource, chunkEndedAt: Date) {
+        guard var session = activeSession else { return }
+        let chunkStartedAt = chunkEndedAt.addingTimeInterval(-4)
+        for item in segments {
+            session.temporaryTranscript.append(TranscriptSegment(
+                startedAt: chunkStartedAt.addingTimeInterval(item.start),
+                endedAt: chunkStartedAt.addingTimeInterval(item.end),
+                source: source,
+                speaker: speakerLabel(source: source, diarizedLabel: item.speaker),
+                text: item.text,
+                isImportant: false
+            ))
+        }
+        activeSession = session
+        persist(session)
+    }
+
     func updateSection(_ section: String, text: String) {
         guard var session = activeSession else { return }
         session.structuredMinutes.sections[section] = text
@@ -78,6 +99,7 @@ final class AppModel {
 
     func finishMeeting() {
         guard var session = activeSession else { return }
+        refreshTask?.cancel()
         session.endedAt = Date()
         isCapturing = false
         do {
@@ -117,5 +139,45 @@ final class AppModel {
     private func persist(_ session: MeetingSession) {
         do { try EncryptedSessionStore.save(session) }
         catch { lastError = error.localizedDescription }
+    }
+
+    private func scheduleRefreshLoop() {
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled else { return }
+                await self?.refreshMinutes()
+            }
+        }
+    }
+
+    private func refreshMinutes() async {
+        guard var session = activeSession, isCapturing else { return }
+        let newSegments = session.temporaryTranscript.filter { $0.endedAt > lastRefreshAt }
+        guard !newSegments.isEmpty else { return }
+        do {
+            let update = try await MinutesRefreshService().refresh(recentSegments: newSegments, current: session.structuredMinutes)
+            session.importantSegments.append(contentsOf: newSegments.map { segment in
+                var copy = segment
+                copy.isImportant = update.importantIDs.contains(segment.id)
+                return copy
+            }.filter(\.isImportant))
+            for (section, text) in update.updatedSections { session.structuredMinutes.sections[section] = text }
+            lastRefreshAt = Date()
+            activeSession = session
+            persist(session)
+        } catch {
+            lastError = "議事録の30秒更新に失敗しました。次回の更新で再試行します。\n\(error.localizedDescription)"
+        }
+    }
+
+    private func speakerLabel(source: TranscriptSource, diarizedLabel: String) -> String {
+        switch source {
+        case .selfMicrophone: "自分"
+        case .roomMicrophone: "話者\(diarizedLabel)"
+        case .remoteSystem: "相手\(diarizedLabel)"
+        case .videoSystem: "動画\(diarizedLabel)"
+        }
     }
 }
